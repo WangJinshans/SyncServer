@@ -1,0 +1,28 @@
+
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  password: "12345678"
+  db: 0
+
+maxQps: 10000
+maxConnection: 1000
+maxDesignedSocketConnection: 50000 # 单个 pod的阶段最大值,镜像中的值为1048576,可使用 ulimit -n 查看
+# timeout for socket read/write
+socketTimeout: 10
+# epoll normal udp
+connectionType: "keep_alive_tcp" # keep_alive_tcp: 不断开连接  regular_tcp: 超时断开
+serverType: normal
+logLevel: debug
+platForm: "sync_server"
+enableMonitoring: true
+
+consulAddress: "127.0.0.1:8500"
+commandSenderServerPort: 9002 # grpc 监听端口
+connectionManagerAddress: "127.0.0.1"
+connectionManagerServerPort: 9003 # grpc 监听端口
+healthCheckPort: 9004 # 健康检查端口
+
+enableConnReport: true
+
+protocol: xny32960
