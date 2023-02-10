@@ -80,8 +80,6 @@ func readConfigFromFile() {
 		panic(err)
 	}
 
-	protocol = viper.GetString("protocol")
-
 	redisHost = viper.GetString("redis.host")
 	redisPort = viper.GetInt("redis.port")
 	redisPassword = viper.GetString("redis.password")
@@ -91,8 +89,7 @@ func readConfigFromFile() {
 	serverType = viper.GetString("serverType")
 	connectionType = viper.GetString("connectionType")
 	socketTimeout = viper.GetInt("socketTimeout")
-	maxQps = viper.GetInt64("maxQps")
-	maxConnection = viper.GetInt("maxConnection")
+	port = viper.GetInt("port")
 
 	logLevel = viper.GetString("logLevel")
 	platForm = viper.GetString("platForm")
@@ -151,57 +148,67 @@ func makeServer() {
 	<-done
 }
 
-func connectionMade(c *network.Connection, vin string) {
-	log.Info().Msgf("Receive new connection from %v, vin: %s", c.RemoteAddr(), vin)
-	c.MarkConnection(vin)
+func connectionMade(c *network.Connection, deviceId string) {
+	log.Info().Msgf("Receive new connection from device id: %s", deviceId)
+	c.MarkConnection(deviceId)
 
 	dataSet := make(map[string]interface{})
-	dataSet["vin"] = vin
+	dataSet["deviceId"] = deviceId
 	dataSet["host"] = host
 	dataSet["address"] = hostAddress
 	dataSet["last_updated"] = time.Now().Unix()
-	vinKey := fmt.Sprintf("%s_%s", common.ConnectionKey, vin)
+	vinKey := fmt.Sprintf("%s_%s", common.ConnectionKey, deviceId)
 	redisClient.HMSet(vinKey, dataSet)
 }
 
-func messageReceived(c *network.Connection, segment []byte) {
+func messageReceived(c *network.Connection, data []byte) {
 
-	log.Info().Msgf("Receive segment: %x from %v", segment, c)
-	if len(c.ResidueBytes) > 0 {
-		segment = append(c.ResidueBytes, segment...)
+	segment := string(data)
+	log.Info().Msgf("Receive segment: %s", segment)
+	if len(c.Left) > 0 {
+		segment = c.Left + segment
 	}
+
+	messages, _, _ := Split(segment)
+	log.Info().Msgf("message list is: %v", messages)
 }
 
 func connectionLost(c *network.Connection, err error) {
-	log.Info().Msgf("Connection lost with client %v, vin: %s, err: %v", c.RemoteAddr(), c.GetID(), err)
-	vin := c.GetID()
+	deviceId := c.GetID()
+	log.Info().Msgf("Connection lost with client, deviceId: %s, err: %v", deviceId, err)
 	dataSet := make(map[string]interface{})
-	dataSet["vin"] = vin
+	dataSet["vin"] = deviceId
 	dataSet["status"] = common.OffLineStatus
 	dataSet["last_updated"] = time.Now().Unix()
-	vinKey := fmt.Sprintf("%s_%s", common.ConnectionKey, vin)
+	vinKey := fmt.Sprintf("%s_%s", common.ConnectionKey, deviceId)
 	redisClient.HMSet(vinKey, dataSet)
 }
 
-func Split(segment []byte) (messages [][]byte, left []byte, invalidMessage [][]byte) {
+func Split(segment string) (messages []string, left string, invalidMessage [][]byte) {
+
 	if len(segment) < 12 {
-		left = append(left, segment...)
+		left = segment
 		return
 	}
-	startFlag := 0x7e
+	startFlag := "#"
 	var indexList []int
 	for index := 0; index < len(segment); index++ {
-		sf := int(segment[index])
+		sf := string(segment[index])
 		if sf == startFlag {
 			indexList = append(indexList, index)
 		}
 	}
 	var i int
 	for i < len(indexList) {
-		message := segment[i : i+1]
-		err := pkg.CheckBCC(message)
-		if err != nil {
-			log.Error().Msgf("package error: %v", err)
+		message := segment[indexList[i] : indexList[i+1]+1]
+		if len(message) == 0 {
+			break
+		}
+		log.Info().Msgf("message is: %s", message)
+		ok := pkg.CheckPackage(message)
+
+		if !ok {
+			log.Error().Msgf("package error: %s", message)
 			continue
 		}
 		messages = append(messages, message)
@@ -210,3 +217,5 @@ func Split(segment []byte) (messages [][]byte, left []byte, invalidMessage [][]b
 
 	return
 }
+
+// #device_id@type@key@operation@bcc#

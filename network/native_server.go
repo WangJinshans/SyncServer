@@ -25,9 +25,8 @@ var (
 type Connection struct {
 	conn           *net.TCPConn
 	Server         Server
-	ResidueBytes   []byte
+	Left           string
 	id             string
-	peerAddress    string
 	MessageChan    chan []byte
 	ExitChan       chan struct{}
 	IsFirstMessage bool   // 是否是第一次发送消息
@@ -82,10 +81,6 @@ func NewNativeServer(config *ServerConfig) (server *NaiveServer) {
 
 func init() {
 	hostName = util.GetHost()
-}
-
-func (c *Connection) String() string {
-	return c.peerAddress
 }
 
 // SetID set id for connection
@@ -272,7 +267,6 @@ func (s *NaiveServer) Listen() {
 			ExitChan:       make(chan struct{}),
 			IsFirstMessage: true,
 		}
-		c.peerAddress = c.RemoteAddr().String()
 
 		go c.dispatchMessage()
 		go c.listen()
