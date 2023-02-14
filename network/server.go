@@ -38,8 +38,6 @@ type Server interface {
 
 	// GetConn get connection object via id
 	GetConn(id string) *Connection
-	// GetIDSet get id set (for connection reporting)
-	GetIDSet() map[string]bool
 
 	// Listen start server's running loop
 	Listen()

@@ -2,17 +2,17 @@ package network
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"github.com/go-redis/redis"
 	"net"
 	"sync"
 	"sync_server/common"
 	"sync_server/global"
 	"sync_server/util"
 	"time"
+
+	"github.com/go-redis/redis"
 
 	"github.com/rs/zerolog/log"
 )
@@ -27,10 +27,10 @@ type Connection struct {
 	Server         Server
 	Left           string
 	id             string
+	DeviceType     string // 发送或者接受
 	MessageChan    chan []byte
 	ExitChan       chan struct{}
 	IsFirstMessage bool   // 是否是第一次发送消息
-	WaitResponse   int    // 回复标志  1: 等待回复   2: 收到回复  0: 不需要回复
 	Status         string // 连接状态  online: 活跃 offline: 离线
 }
 
@@ -104,8 +104,6 @@ func (c *Connection) MarkConnection(id string) (oldFlag bool) {
 	}
 	c.SetID(id) // 设置当前连接Id
 	c.Status = common.OnLineStatus
-	c.id = id
-	c.Server.addConn(id, c)
 	return
 }
 
@@ -115,11 +113,14 @@ func (c *Connection) GetID() string {
 
 func (c *Connection) listen() {
 	reader := bufio.NewReader(c.conn)
-	buffer := make([]byte, 4096, 4096)
+
 	var read int
 	var err error
-	var buffers bytes.Buffer
+	// var buffers bytes.Buffer
+
 	for {
+		buffer := make([]byte, 4096, 4096)
+
 		read, err = reader.Read(buffer)
 		if err != nil {
 			log.Error().Msgf("close connection: %s, error is: %v", c.id, err)
@@ -128,9 +129,20 @@ func (c *Connection) listen() {
 			c.Server.removeConn(c.id)
 			return
 		}
-		buffers.Write(buffer[:read])
-		c.MessageChan <- buffers.Bytes()
-		buffers.Reset()
+		if read > 0 {
+			bs := make([]byte, read)
+			// log.Info().Msgf("read is: %d, buffer[:read] is: %s", read, buffer[:read])
+			// count := copy(bs, buffer[:read])
+			copy(bs, buffer[:read])
+			// log.Info().Msgf("copy count is: %d, bs is: %s", count, bs)
+			c.MessageChan <- bs
+
+		}
+
+		// buffers.Write(buffer[:read])
+		// c.MessageChan <- buffers.Bytes()
+		// buffers.Reset()
+		buffer = nil
 	}
 }
 
@@ -214,18 +226,9 @@ func (s *NaiveServer) GetConn(id string) *Connection {
 	return s.idMap[id]
 }
 
-func (s *NaiveServer) GetIDSet() map[string]bool {
-	mapMutex.RLock()
-	defer mapMutex.RUnlock()
-
-	log.Debug().Msgf("id map: %v", s.idMap)
-	m := make(map[string]bool, len(s.idMap))
-	for id := range s.idMap {
-		m[id] = true
-	}
-	return m
+func (s *NaiveServer) GetConnectionMap() map[string]*Connection {
+	return s.idMap
 }
-
 func (s *NaiveServer) Listen() {
 	s.started = true
 	defer func() { s.started = false }()
@@ -263,10 +266,12 @@ func (s *NaiveServer) Listen() {
 		c := Connection{
 			conn:           conn,
 			Server:         s,
-			MessageChan:    make(chan []byte, 20),
+			MessageChan:    make(chan []byte, 100),
+			DeviceType:     common.Receiver,
 			ExitChan:       make(chan struct{}),
 			IsFirstMessage: true,
 		}
+		log.Info().Msgf("receive new connection: %s", conn.RemoteAddr())
 
 		go c.dispatchMessage()
 		go c.listen()

@@ -3,26 +3,20 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/go-redis/redis"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
-	"github.com/spf13/viper"
 	"os"
 	"os/signal"
+	"strings"
 	"sync_server/common"
 	"sync_server/global"
 	"sync_server/network"
 	"sync_server/pkg"
 	"sync_server/util"
 	"syscall"
-	"time"
-)
 
-var (
-	old7e = []byte{0x7e}
-	new7e = []byte{0x7d, 0x02}
-	old7d = []byte{0x7d}
-	new7d = []byte{0x7d, 0x01}
+	"github.com/go-redis/redis"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"github.com/spf13/viper"
 )
 
 var (
@@ -50,8 +44,7 @@ var (
 	port            int
 	socketTimeout   int
 	sendCommandPort int
-	maxQps          int64
-	maxConnection   int
+	messageChan     chan string
 )
 
 func init() {
@@ -70,6 +63,7 @@ func init() {
 	if host == "" {
 		log.Error().Msg("failed to get host name...")
 	}
+	messageChan = make(chan string, 100)
 }
 
 func readConfigFromFile() {
@@ -115,20 +109,41 @@ func startServer() {
 	global.TTL = socketTimeout
 	global.Protocol = protocol
 
-	log.Info().Msgf("serverType: %s", serverType)
 	makeServer()
+}
+
+func HandMessage(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("start to quit handle")
+			return
+		case msg := <-messageChan:
+			SendGroupMessage(msg)
+		}
+	}
+}
+
+func SendGroupMessage(msg string) {
+	connectionMap := nativeServer.GetConnectionMap()
+	for deviceId, conn := range connectionMap {
+		//log.Info().Msgf("device id: %s, connection type is: %s", deviceId, conn.DeviceType)
+		if conn.DeviceType == common.Publisher {
+			continue
+		}
+		conn.Send([]byte(msg + "\n"))
+		log.Info().Msgf("sync to device: %s, data is: %s", deviceId, msg)
+	}
 }
 
 func makeServer() {
 
 	ctx := context.Background()
-	redisClient = util.GetRedisClientWithTimeOut(redisHost, redisPort, redisPassword, redisDB, redisReadTimeout)
+	//redisClient = util.GetRedisClientWithTimeOut(redisHost, redisPort, redisPassword, redisDB, redisReadTimeout)
 
 	serverConfig := network.ServerConfig{
-		Address:       fmt.Sprintf("0.0.0.0:%d", port),
-		Timeout:       socketTimeout,
-		MaxQps:        maxQps,
-		MaxConnection: maxConnection,
+		Address: fmt.Sprintf("0.0.0.0:%d", port),
+		Timeout: socketTimeout,
 	}
 	nativeServer = network.NewNativeServer(&serverConfig)
 	nativeServer.RegisterCallbacks(connectionMade, connectionLost, messageReceived)
@@ -140,25 +155,28 @@ func makeServer() {
 		nativeServer.Stop()
 		done <- true
 	}()
-	if connectionType == common.ContinueConnection {
-		go nativeServer.ContinueConnectionStore(redisClient, ctx) // 定时更新状态信息
-	}
+
+	go HandMessage(ctx)
+	//if connectionType == common.ContinueConnection {
+	//	go nativeServer.ContinueConnectionStore(redisClient, ctx) // 定时更新状态信息
+	//}
 
 	nativeServer.Listen()
 	<-done
 }
 
 func connectionMade(c *network.Connection, deviceId string) {
-	log.Info().Msgf("Receive new connection from device id: %s", deviceId)
 	c.MarkConnection(deviceId)
+	log.Info().Msgf("Receive new connection from device id: %s, device type is: %s", deviceId, c.DeviceType)
 
-	dataSet := make(map[string]interface{})
-	dataSet["deviceId"] = deviceId
-	dataSet["host"] = host
-	dataSet["address"] = hostAddress
-	dataSet["last_updated"] = time.Now().Unix()
-	vinKey := fmt.Sprintf("%s_%s", common.ConnectionKey, deviceId)
-	redisClient.HMSet(vinKey, dataSet)
+	//dataSet := make(map[string]interface{})
+	//dataSet["deviceId"] = deviceId
+	//dataSet["host"] = host
+	//dataSet["address"] = hostAddress
+	//dataSet["last_updated"] = time.Now().Unix()
+	//vinKey := fmt.Sprintf("%s_%s", common.ConnectionKey, deviceId)
+	//
+	//.HMSet(vinKey, dataSet)
 }
 
 func messageReceived(c *network.Connection, data []byte) {
@@ -170,20 +188,37 @@ func messageReceived(c *network.Connection, data []byte) {
 	}
 
 	messages, _, _ := Split(segment)
-	log.Info().Msgf("message list is: %v", messages)
+	//log.Info().Msgf("message list is: %v", messages)
+	for _, message := range messages {
+		if c.IsFirstMessage {
+			identityList := strings.Split(message, "@")
+			deviceId := identityList[0]
+			deviceType := identityList[1]
+
+			if deviceType != "" {
+				c.DeviceType = deviceType
+			}
+			connectionMade(c, deviceId)
+			c.IsFirstMessage = false
+		}
+		messageChan <- message
+	}
 }
 
 func connectionLost(c *network.Connection, err error) {
 	deviceId := c.GetID()
 	log.Info().Msgf("Connection lost with client, deviceId: %s, err: %v", deviceId, err)
-	dataSet := make(map[string]interface{})
-	dataSet["vin"] = deviceId
-	dataSet["status"] = common.OffLineStatus
-	dataSet["last_updated"] = time.Now().Unix()
-	vinKey := fmt.Sprintf("%s_%s", common.ConnectionKey, deviceId)
-	redisClient.HMSet(vinKey, dataSet)
+	//dataSet := make(map[string]interface{})
+	//dataSet["vin"] = deviceId
+	//dataSet["status"] = common.OffLineStatus
+	//dataSet["last_updated"] = time.Now().Unix()
+	//vinKey := fmt.Sprintf("%s_%s", common.ConnectionKey, deviceId)
+	//redisClient.HMSet(vinKey, dataSet)
 }
 
+// #device_server@publisher@32@up@end_string#g#
+// #device_server@publisher@88@up@end_string#ring#
+// #device_server@publisher@88@down@end_strin
 func Split(segment string) (messages []string, left string, invalidMessage [][]byte) {
 
 	if len(segment) < 12 {
@@ -198,10 +233,17 @@ func Split(segment string) (messages []string, left string, invalidMessage [][]b
 			indexList = append(indexList, index)
 		}
 	}
+	if len(indexList) == 1 {
+		left = segment
+	}
 	var i int
+	log.Info().Msgf("segment is: %s, index list is: %v", segment, indexList)
 	for i < len(indexList) {
 		message := segment[indexList[i] : indexList[i+1]+1]
 		if len(message) == 0 {
+			break
+		}
+		if message == "##" {
 			break
 		}
 		log.Info().Msgf("message is: %s", message)
@@ -217,5 +259,3 @@ func Split(segment string) (messages []string, left string, invalidMessage [][]b
 
 	return
 }
-
-// #device_id@type@key@operation@bcc#
